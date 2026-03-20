@@ -101,6 +101,11 @@ const THEMES = [
     colors: { bg: "#f9f4ee", bgCard: "#fffcf7", bgHover: "#f0e8dc", text: "#32261a", textMuted: "#967a5e", accent: "#b85c38", accentHover: "#a04e2e", accentSoft: "rgba(184,92,56,0.07)", border: "#e8ddd0", inputBg: "#fcf9f4", shadow: "rgba(0,0,0,0.04)" },
     fonts: { heading: "'Gilda Display'", body: "'Jost'" }
   },
+  {
+    id: "citrus-canvas", name: "Citrus Canvas", cat: "Light",
+    colors: { bg: "#f7f3e8", bgCard: "#fffdf8", bgHover: "#f1e9d8", text: "#21312b", textMuted: "#6d7d72", accent: "#d97706", accentHover: "#b85f00", accentSoft: "rgba(217,119,6,0.08)", border: "#e5d9c3", inputBg: "#fcf8f0", shadow: "rgba(0,0,0,0.05)" },
+    fonts: { heading: "'Newsreader'", body: "'Plus Jakarta Sans'" }
+  },
 ];
 
 const BUTTON_STYLES = [
@@ -131,6 +136,58 @@ const CARD_STYLES = [
   { id: "bordered-accent", name: "Accent Border", desc: "Top accent stripe" },
   { id: "inset", name: "Inset", desc: "Recessed, sunken depth" },
 ];
+
+const COLOR_FIELDS = [
+  { id: "bg", label: "Page Background" },
+  { id: "bgCard", label: "Surface" },
+  { id: "bgHover", label: "Surface Hover" },
+  { id: "inputBg", label: "Input Background" },
+  { id: "text", label: "Text" },
+  { id: "textMuted", label: "Muted Text" },
+  { id: "accent", label: "Accent" },
+  { id: "accentHover", label: "Accent Hover" },
+  { id: "border", label: "Border" },
+];
+
+const FONT_OPTIONS = [...new Set(THEMES.flatMap((theme) => [theme.fonts.heading, theme.fonts.body]))]
+  .sort((a, b) => a.replace(/'/g, "").localeCompare(b.replace(/'/g, "")));
+
+function hexToRgb(hex) {
+  const normalized = hex.replace("#", "");
+  const expanded = normalized.length === 3
+    ? normalized.split("").map((char) => char + char).join("")
+    : normalized;
+  const value = Number.parseInt(expanded, 16);
+
+  return {
+    r: (value >> 16) & 255,
+    g: (value >> 8) & 255,
+    b: value & 255,
+  };
+}
+
+function withAlpha(hex, alpha) {
+  const { r, g, b } = hexToRgb(hex);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function getDerivedTheme(baseTheme, colorOverrides = {}, fontOverrides = {}) {
+  const colors = {
+    ...baseTheme.colors,
+    ...colorOverrides,
+  };
+
+  colors.accentSoft = withAlpha(colors.accent, baseTheme.cat === "Dark" ? 0.12 : 0.08);
+
+  return {
+    ...baseTheme,
+    colors,
+    fonts: {
+      ...baseTheme.fonts,
+      ...fontOverrides,
+    },
+  };
+}
 
 function getButtonCSS(btn, theme, state = "default") {
   const c = theme.colors;
@@ -186,6 +243,8 @@ export default function DesignChooser() {
   const [inputId, setInputId] = useState("boxed");
   const [cardId, setCardId] = useState("flat");
   const [tab, setTab] = useState("theme");
+  const [colorOverrides, setColorOverrides] = useState({});
+  const [fontOverrides, setFontOverrides] = useState({});
   const [hoveredBtn, setHoveredBtn] = useState(null);
   const [focusedInput, setFocusedInput] = useState(null);
   const [toggleOn, setToggleOn] = useState(true);
@@ -194,41 +253,51 @@ export default function DesignChooser() {
   const [radioVal, setRadioVal] = useState("a");
   const [exported, setExported] = useState(false);
 
-  const theme = THEMES.find(t => t.id === themeId);
+  const baseTheme = THEMES.find(t => t.id === themeId);
+  const theme = getDerivedTheme(baseTheme, colorOverrides, fontOverrides);
   const button = BUTTON_STYLES.find(b => b.id === buttonId);
   const input = INPUT_STYLES.find(i => i.id === inputId);
   const card = CARD_STYLES.find(c => c.id === cardId);
+  const hasCustomizations = Object.keys(colorOverrides).length > 0 || Object.keys(fontOverrides).length > 0;
 
   const TABS = [
     { id: "theme", label: "Theme" },
     { id: "buttons", label: "Buttons" },
     { id: "inputs", label: "Inputs" },
     { id: "cards", label: "Cards" },
+    { id: "customize", label: "Customize" },
   ];
 
   const [exportFormat, setExportFormat] = useState("json");
   const [showExport, setShowExport] = useState(false);
 
   useEffect(() => {
-    const fontNames = [...new Set(THEMES.flatMap(t => [t.fonts.heading, t.fonts.body]).map(f => f.replace(/'/g, "")))];
+    const fontNames = FONT_OPTIONS.map((font) => font.replace(/'/g, ""));
     const link = document.createElement("link");
     link.rel = "stylesheet";
     link.href = `https://fonts.googleapis.com/css2?family=${fontNames.map(f => f.replace(/ /g, "+") + ":wght@300;400;500;600;700").join("&family=")}&display=swap`;
     document.head.appendChild(link);
   }, []);
 
+  useEffect(() => {
+    setColorOverrides({});
+    setFontOverrides({});
+  }, [themeId]);
+
   const exportJSON = () => {
     const c = theme.colors;
-    const tokens = {
-      _meta: {
-        generator: "Design System Builder",
-        description: `Use these design tokens to implement the UI. Apply them to your framework of choice (Tailwind, CSS variables, SCSS, etc.)`,
-      },
-      theme: {
-        name: theme.name,
-        mode: theme.cat.toLowerCase(),
-        colors: {
-          background: { base: c.bg, surface: c.bgCard, hover: c.bgHover, input: c.inputBg },
+      const tokens = {
+        _meta: {
+          generator: "Design System Builder",
+          description: `Use these design tokens to implement the UI. Apply them to your framework of choice (Tailwind, CSS variables, SCSS, etc.)`,
+          basedOnTheme: baseTheme.name,
+          customized: hasCustomizations,
+        },
+        theme: {
+          name: hasCustomizations ? `${baseTheme.name} Custom` : theme.name,
+          mode: theme.cat.toLowerCase(),
+          colors: {
+            background: { base: c.bg, surface: c.bgCard, hover: c.bgHover, input: c.inputBg },
           text: { primary: c.text, muted: c.textMuted },
           accent: { base: c.accent, hover: c.accentHover, soft: c.accentSoft },
           border: c.border,
@@ -274,7 +343,7 @@ export default function DesignChooser() {
   const exportCSS = () => {
     const c = theme.colors;
     return `:root {
-  /* Theme: ${theme.name} (${theme.cat}) */
+  /* Theme: ${hasCustomizations ? `${baseTheme.name} Custom` : theme.name} (${theme.cat}) */
   --color-bg: ${c.bg};
   --color-surface: ${c.bgCard};
   --color-surface-hover: ${c.bgHover};
@@ -332,6 +401,46 @@ module.exports = {
       setExported(true);
       setTimeout(() => setExported(false), 2000);
     });
+  };
+
+  const handleColorChange = (token, value) => {
+    setColorOverrides((current) => {
+      if (value === baseTheme.colors[token]) {
+        const next = { ...current };
+        delete next[token];
+        return next;
+      }
+
+      return { ...current, [token]: value };
+    });
+  };
+
+  const handleFontChange = (token, value) => {
+    setFontOverrides((current) => {
+      if (value === baseTheme.fonts[token]) {
+        const next = { ...current };
+        delete next[token];
+        return next;
+      }
+
+      return { ...current, [token]: value };
+    });
+  };
+
+  const resetPreviewState = () => {
+    setHoveredBtn(null);
+    setFocusedInput(null);
+    setToggleOn(true);
+    setSliderVal(65);
+    setCheckVal(true);
+    setRadioVal("a");
+    setExported(false);
+  };
+
+  const resetCustomizations = () => {
+    setColorOverrides({});
+    setFontOverrides({});
+    resetPreviewState();
   };
 
   return (
@@ -516,6 +625,122 @@ module.exports = {
                 ))}
               </div>
             )}
+
+            {tab === "customize" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                <div style={{
+                  ...getCardCSS(card, theme),
+                  padding: 18,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 12,
+                  flexWrap: "wrap",
+                }}>
+                  <div>
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>Theme defaults with manual overrides</div>
+                    <div style={{ fontSize: "0.8rem", color: theme.colors.textMuted, lineHeight: 1.5 }}>
+                      Selecting a theme resets these controls to that theme&apos;s built-in colors and fonts.
+                    </div>
+                  </div>
+                  <button
+                    onClick={resetCustomizations}
+                    style={{
+                      ...getButtonCSS(button, theme),
+                      padding: "8px 16px",
+                    }}
+                  >
+                    Reset to Theme
+                  </button>
+                </div>
+
+                <div style={{
+                  ...getCardCSS(card, theme),
+                  padding: 18,
+                }}>
+                  <div style={{ fontWeight: 600, marginBottom: 12 }}>Colors</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 12 }}>
+                    {COLOR_FIELDS.map((field) => (
+                      <label key={field.id} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        <span style={{ fontSize: "0.8rem", color: theme.colors.textMuted }}>{field.label}</span>
+                        <div style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                          border: `1px solid ${theme.colors.border}`,
+                          borderRadius: 12,
+                          padding: "8px 10px",
+                          background: theme.colors.inputBg,
+                        }}>
+                          <input
+                            type="color"
+                            value={theme.colors[field.id]}
+                            onChange={(event) => handleColorChange(field.id, event.target.value)}
+                            style={{
+                              width: 38,
+                              height: 38,
+                              border: "none",
+                              padding: 0,
+                              background: "transparent",
+                              cursor: "pointer",
+                            }}
+                          />
+                          <span style={{ fontFamily: "'JetBrains Mono', 'IBM Plex Mono', monospace", fontSize: "0.75rem" }}>
+                            {theme.colors[field.id]}
+                          </span>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{
+                  ...getCardCSS(card, theme),
+                  padding: 18,
+                }}>
+                  <div style={{ fontWeight: 600, marginBottom: 12 }}>Fonts</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
+                    {[
+                      { id: "heading", label: "Heading Font", fallback: "serif" },
+                      { id: "body", label: "Body Font", fallback: "sans-serif" },
+                    ].map((field) => (
+                      <label key={field.id} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        <span style={{ fontSize: "0.8rem", color: theme.colors.textMuted }}>{field.label}</span>
+                        <select
+                          value={theme.fonts[field.id]}
+                          onChange={(event) => handleFontChange(field.id, event.target.value)}
+                          style={{
+                            width: "100%",
+                            borderRadius: 12,
+                            border: `1px solid ${theme.colors.border}`,
+                            background: theme.colors.inputBg,
+                            color: theme.colors.text,
+                            padding: "12px 14px",
+                            fontFamily: `${theme.fonts.body}, sans-serif`,
+                            outline: "none",
+                          }}
+                        >
+                          {FONT_OPTIONS.map((font) => (
+                            <option key={font} value={font}>
+                              {font.replace(/'/g, "")}
+                            </option>
+                          ))}
+                        </select>
+                        <div style={{
+                          border: `1px solid ${theme.colors.border}`,
+                          borderRadius: 12,
+                          padding: "12px 14px",
+                          background: theme.colors.inputBg,
+                          fontFamily: `${theme.fonts[field.id]}, ${field.fallback}`,
+                        }}>
+                          {field.id === "heading" ? "Dashboard Overview" : "The quick brown fox jumps over the lazy dog. 0123456789"}
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Right: Live Preview */}
@@ -698,7 +923,7 @@ module.exports = {
                 Heading — {theme.fonts.heading.replace(/'/g, "")}
               </div>
               <div style={{ fontFamily: `${theme.fonts.body}, sans-serif`, fontSize: "0.9rem", color: theme.colors.textMuted, lineHeight: 1.6, transition: "all 0.45s" }}>
-                Body text · {theme.fonts.body.replace(/'/g, "")} · The quick brown fox jumps over the lazy dog. 0123456789
+                Body text — {theme.fonts.body.replace(/'/g, "")} — The quick brown fox jumps over the lazy dog. 0123456789
               </div>
             </div>
           </div>
@@ -716,7 +941,7 @@ module.exports = {
             {/* Summary + toggle */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
               <div style={{ fontSize: "0.84rem", color: theme.colors.textMuted }}>
-                <strong style={{ color: theme.colors.text }}>{theme.name}</strong> · {button.name} buttons · {input.name} inputs · {card.name} cards
+                <strong style={{ color: theme.colors.text }}>{hasCustomizations ? `${baseTheme.name} Custom` : theme.name}</strong> · {button.name} buttons · {input.name} inputs · {card.name} cards
               </div>
               <span onClick={() => setShowExport(!showExport)}
                 onMouseEnter={() => setHoveredBtn("export")}
