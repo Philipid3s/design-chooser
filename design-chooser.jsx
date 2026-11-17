@@ -167,6 +167,55 @@ function getFontStylesheetUrl(fontName) {
   return `https://fonts.googleapis.com/css2?family=${fontName.replace(/ /g, "+")}:wght@${weights.join(";")}&display=swap`;
 }
 
+// ── Shareable state in the URL hash ──────────────────────────────────────────
+// e.g. #theme=tokyo-neon&btn=pill&accent=ff3d8b&heading=Sora
+// Values equal to the defaults are omitted to keep links short.
+const DEFAULT_SELECTION = { themeId: "midnight-gold", buttonId: "solid", inputId: "boxed", cardId: "flat" };
+const SELECTION_PARAMS = [
+  { key: "themeId", param: "theme", options: () => THEMES },
+  { key: "buttonId", param: "btn", options: () => BUTTON_STYLES },
+  { key: "inputId", param: "input", options: () => INPUT_STYLES },
+  { key: "cardId", param: "card", options: () => CARD_STYLES },
+];
+const FONT_FIELDS = ["heading", "body"];
+const HEX_COLOR = /^[0-9a-f]{6}$/i;
+
+function parseHashState(hash) {
+  const params = new URLSearchParams(hash.replace(/^#/, ""));
+  const state = { ...DEFAULT_SELECTION, colorOverrides: {}, fontOverrides: {} };
+
+  for (const { key, param, options } of SELECTION_PARAMS) {
+    const value = params.get(param);
+    if (value && options().some((option) => option.id === value)) state[key] = value;
+  }
+
+  const baseTheme = THEMES.find((t) => t.id === state.themeId);
+  for (const { id } of COLOR_FIELDS) {
+    const value = params.get(id);
+    if (value && HEX_COLOR.test(value)) {
+      const color = `#${value.toLowerCase()}`;
+      if (color !== baseTheme.colors[id]) state.colorOverrides[id] = color;
+    }
+  }
+  for (const field of FONT_FIELDS) {
+    const value = params.get(field);
+    const font = value && FONT_OPTIONS.find((option) => option === `'${value}'`);
+    if (font && font !== baseTheme.fonts[field]) state.fontOverrides[field] = font;
+  }
+  return state;
+}
+
+function buildHash(state) {
+  const params = new URLSearchParams();
+  for (const { key, param } of SELECTION_PARAMS) {
+    if (state[key] !== DEFAULT_SELECTION[key]) params.set(param, state[key]);
+  }
+  for (const [id, color] of Object.entries(state.colorOverrides)) params.set(id, color.replace("#", ""));
+  for (const [field, font] of Object.entries(state.fontOverrides)) params.set(field, font.replace(/'/g, ""));
+  const query = params.toString();
+  return query ? `#${query}` : "";
+}
+
 // Makes a non-button element focusable and operable with Enter/Space.
 function pressable(onPress, role = "button") {
   return {
@@ -189,6 +238,26 @@ function relativeLuminance(hex) {
     return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
   };
   return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+}
+
+function contrastRatio(hexA, hexB) {
+  const a = relativeLuminance(hexA);
+  const b = relativeLuminance(hexB);
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
+// Picks the foreground that stays most readable across every given background.
+function pickReadableOn(...backgrounds) {
+  const candidates = ["#ffffff", "#111111"];
+  const worst = (fg) => Math.min(...backgrounds.map((bg) => contrastRatio(fg, bg)));
+  return candidates.reduce((best, fg) => (worst(fg) > worst(best) ? fg : best));
+}
+
+function getContrastGrade(ratio) {
+  if (ratio >= 7) return "AAA";
+  if (ratio >= 4.5) return "AA";
+  if (ratio >= 3) return "AA Large";
+  return "Fail";
 }
 
 function hexToRgb(hex) {
@@ -222,6 +291,8 @@ function getDerivedTheme(baseTheme, colorOverrides = {}, fontOverrides = {}) {
     : baseTheme.cat;
 
   colors.accentSoft = withAlpha(colors.accent, cat === "Dark" ? 0.12 : 0.08);
+  // Text on accent fills: one color for both default and hover so it stays stable.
+  colors.onAccent = pickReadableOn(colors.accent, colors.accentHover);
 
   return {
     ...baseTheme,
@@ -247,17 +318,17 @@ function getButtonCSS(btn, theme, state = "default") {
     letterSpacing: "0.01em",
     display: "inline-block",
   };
-  if (btn.style === "filled") return { ...base, background: state === "hover" ? c.accentHover : c.accent, color: "#fff", border: btn.border === "none" ? "none" : `${btn.border} ${c.accent}`, boxShadow: "none" };
+  if (btn.style === "filled") return { ...base, background: state === "hover" ? c.accentHover : c.accent, color: c.onAccent, border: btn.border === "none" ? "none" : `${btn.border} ${c.accent}`, boxShadow: "none" };
   if (btn.style === "outlined") return { ...base, background: state === "hover" ? c.accentSoft : "transparent", color: c.accent, border: `${btn.border} ${c.accent}`, boxShadow: "none" };
   if (btn.style === "ghost") return { ...base, background: state === "hover" ? c.accentSoft : "transparent", color: c.accent, border: "none", boxShadow: "none" };
-  if (btn.style === "soft") return { ...base, background: state === "hover" ? c.accent : c.accentSoft, color: state === "hover" ? "#fff" : c.accent, border: "none", boxShadow: "none" };
+  if (btn.style === "soft") return { ...base, background: state === "hover" ? c.accent : c.accentSoft, color: state === "hover" ? c.onAccent : c.accent, border: "none", boxShadow: "none" };
   if (btn.style === "brutalist") {
     const isDark = theme.cat === "Dark";
     const borderColor = isDark ? c.text : "#000";
-    return { ...base, background: c.accent, color: "#fff", border: `${btn.border} ${borderColor}`, boxShadow: `${btn.shadow} ${borderColor}` };
+    return { ...base, background: c.accent, color: c.onAccent, border: `${btn.border} ${borderColor}`, boxShadow: `${btn.shadow} ${borderColor}` };
   }
-  if (btn.style === "elevated") return { ...base, background: c.accent, color: "#fff", border: "none", boxShadow: state === "hover" ? `0 6px 20px ${c.accent}66` : `0 4px 14px ${c.accent}44` };
-  if (btn.style === "gradient") return { ...base, background: state === "hover" ? `linear-gradient(135deg, ${c.accentHover}, ${c.accent})` : `linear-gradient(135deg, ${c.accent}, ${c.accentHover})`, color: "#fff", border: "none", boxShadow: state === "hover" ? `0 4px 16px ${c.accent}44` : "none" };
+  if (btn.style === "elevated") return { ...base, background: c.accent, color: c.onAccent, border: "none", boxShadow: state === "hover" ? `0 6px 20px ${c.accent}66` : `0 4px 14px ${c.accent}44` };
+  if (btn.style === "gradient") return { ...base, background: state === "hover" ? `linear-gradient(135deg, ${c.accentHover}, ${c.accent})` : `linear-gradient(135deg, ${c.accent}, ${c.accentHover})`, color: c.onAccent, border: "none", boxShadow: state === "hover" ? `0 4px 16px ${c.accent}44` : "none" };
   return base;
 }
 
@@ -283,13 +354,15 @@ function getInputCSS(input, theme, focused) {
 }
 
 export default function DesignChooser() {
-  const [themeId, setThemeId] = useState("midnight-gold");
-  const [buttonId, setButtonId] = useState("solid");
-  const [inputId, setInputId] = useState("boxed");
-  const [cardId, setCardId] = useState("flat");
+  const [initialState] = useState(() => parseHashState(window.location.hash));
+  const [themeId, setThemeId] = useState(initialState.themeId);
+  const [buttonId, setButtonId] = useState(initialState.buttonId);
+  const [inputId, setInputId] = useState(initialState.inputId);
+  const [cardId, setCardId] = useState(initialState.cardId);
   const [tab, setTab] = useState("theme");
-  const [colorOverrides, setColorOverrides] = useState({});
-  const [fontOverrides, setFontOverrides] = useState({});
+  const [colorOverrides, setColorOverrides] = useState(initialState.colorOverrides);
+  const [fontOverrides, setFontOverrides] = useState(initialState.fontOverrides);
+  const [linkStatus, setLinkStatus] = useState(null); // null | "copied" | "failed"
   const [hoveredBtn, setHoveredBtn] = useState(null);
   const [focusedInput, setFocusedInput] = useState(null);
   const [toggleOn, setToggleOn] = useState(true);
@@ -306,6 +379,16 @@ export default function DesignChooser() {
   const input = INPUT_STYLES.find(i => i.id === inputId);
   const card = CARD_STYLES.find(c => c.id === cardId);
   const hasCustomizations = Object.keys(colorOverrides).length > 0 || Object.keys(fontOverrides).length > 0;
+
+  // `min` is the ratio each pair needs: 4.5 for body text, 3 for large text / UI elements.
+  const contrastChecks = [
+    { label: "Text on background", fg: theme.colors.text, bg: theme.colors.bg, min: 4.5 },
+    { label: "Text on surface", fg: theme.colors.text, bg: theme.colors.bgCard, min: 4.5 },
+    { label: "Muted text on surface", fg: theme.colors.textMuted, bg: theme.colors.bgCard, min: 4.5 },
+    { label: "Button text on accent", fg: theme.colors.onAccent, bg: theme.colors.accent, min: 4.5 },
+    { label: "Button text on accent hover", fg: theme.colors.onAccent, bg: theme.colors.accentHover, min: 4.5 },
+    { label: "Accent on surface (links, outlines)", fg: theme.colors.accent, bg: theme.colors.bgCard, min: 3 },
+  ];
 
   const TABS = [
     { id: "theme", label: "Theme" },
@@ -330,6 +413,40 @@ export default function DesignChooser() {
     return () => links.forEach((link) => link.remove());
   }, []);
 
+  // Keep the URL in sync so the current configuration can be bookmarked or shared.
+  useEffect(() => {
+    const hash = buildHash({ themeId, buttonId, inputId, cardId, colorOverrides, fontOverrides });
+    if (hash !== window.location.hash) {
+      const { pathname, search } = window.location;
+      window.history.replaceState(null, "", `${pathname}${search}${hash}`);
+    }
+  }, [themeId, buttonId, inputId, cardId, colorOverrides, fontOverrides]);
+
+  // Apply a link pasted into the address bar while the page is open.
+  useEffect(() => {
+    const applyHash = () => {
+      const next = parseHashState(window.location.hash);
+      setThemeId(next.themeId);
+      setButtonId(next.buttonId);
+      setInputId(next.inputId);
+      setCardId(next.cardId);
+      setColorOverrides(next.colorOverrides);
+      setFontOverrides(next.fontOverrides);
+    };
+    window.addEventListener("hashchange", applyHash);
+    return () => window.removeEventListener("hashchange", applyHash);
+  }, []);
+
+  const handleCopyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setLinkStatus("copied");
+    } catch {
+      setLinkStatus("failed");
+    }
+    setTimeout(() => setLinkStatus(null), 2000);
+  };
+
   const selectTheme = (id) => {
     setThemeId(id);
     setColorOverrides({});
@@ -350,7 +467,7 @@ export default function DesignChooser() {
           mode: theme.cat.toLowerCase(),
           colors: {
             background: { base: c.bg, surface: c.bgCard, hover: c.bgHover, input: c.inputBg },
-          text: { primary: c.text, muted: c.textMuted },
+          text: { primary: c.text, muted: c.textMuted, onAccent: c.onAccent },
           accent: { base: c.accent, hover: c.accentHover, soft: c.accentSoft },
           border: c.border,
           shadow: c.shadow,
@@ -365,7 +482,7 @@ export default function DesignChooser() {
           style: button.name,
           borderRadius: button.radius,
           variants: {
-            primary: { background: "accent.base", color: "#fff", hoverBackground: "accent.hover" },
+            primary: { background: "accent.base", color: "text.onAccent", hoverBackground: "accent.hover" },
             secondary: { background: "transparent", color: "accent.base", border: "border" },
             link: { background: "transparent", color: "text.muted", textDecoration: "underline" },
           },
@@ -407,6 +524,7 @@ export default function DesignChooser() {
   --color-accent: ${c.accent};
   --color-accent-hover: ${c.accentHover};
   --color-accent-soft: ${c.accentSoft};
+  --color-on-accent: ${c.onAccent};
   --color-border: ${c.border};
   --color-shadow: ${c.shadow};
   --font-heading: ${theme.fonts.heading}, sans-serif;
@@ -428,7 +546,7 @@ module.exports = {
       colors: {
         bg: { DEFAULT: '${c.bg}', surface: '${c.bgCard}', hover: '${c.bgHover}', input: '${c.inputBg}' },
         text: { DEFAULT: '${c.text}', muted: '${c.textMuted}' },
-        accent: { DEFAULT: '${c.accent}', hover: '${c.accentHover}', soft: '${c.accentSoft}' },
+        accent: { DEFAULT: '${c.accent}', hover: '${c.accentHover}', soft: '${c.accentSoft}', foreground: '${c.onAccent}' },
         border: '${c.border}',
       },
       fontFamily: {
@@ -764,6 +882,48 @@ module.exports = {
                   ...getCardCSS(card, theme),
                   padding: 18,
                 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>Contrast</div>
+                  <div style={{ fontSize: "0.8rem", color: theme.colors.textMuted, marginBottom: 12, lineHeight: 1.5 }}>
+                    WCAG ratios for key pairs. Body text needs 4.5:1 (AA); large text and UI parts need 3:1.
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {contrastChecks.map((check) => {
+                      const ratio = contrastRatio(check.fg, check.bg);
+                      const grade = getContrastGrade(ratio);
+                      const passes = ratio >= check.min;
+                      return (
+                        <div key={check.label} style={{
+                          display: "flex", alignItems: "center", gap: 12,
+                          padding: "8px 10px", borderRadius: 10,
+                          border: `1px solid ${theme.colors.border}`,
+                        }}>
+                          <span aria-hidden="true" style={{
+                            minWidth: 40, textAlign: "center", padding: "4px 6px", borderRadius: 6,
+                            background: check.bg, color: check.fg, fontWeight: 700, fontSize: "0.85rem",
+                            border: `1px solid ${theme.colors.border}`,
+                          }}>Aa</span>
+                          <span style={{ flex: 1, fontSize: "0.82rem" }}>{check.label}</span>
+                          <span style={{ fontFamily: "'JetBrains Mono', 'IBM Plex Mono', monospace", fontSize: "0.78rem" }}>
+                            {ratio.toFixed(2)}:1
+                          </span>
+                          <span style={{
+                            minWidth: 72, textAlign: "center", fontSize: "0.7rem", fontWeight: 700,
+                            padding: "3px 8px", borderRadius: 999,
+                            background: passes ? withAlpha("#22c55e", 0.15) : withAlpha("#ef4444", 0.15),
+                            color: passes
+                              ? (theme.cat === "Dark" ? "#4ade80" : "#15803d")
+                              : (theme.cat === "Dark" ? "#f87171" : "#b91c1c"),
+                          }}>{grade}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div style={{
+                  ...getCardCSS(card, theme),
+                  padding: 18,
+                }}>
                   <div style={{ fontWeight: 600, marginBottom: 12 }}>Fonts</div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
                     {[
@@ -944,7 +1104,7 @@ module.exports = {
                       border: checkVal ? "none" : `2px solid ${theme.colors.border}`,
                       background: checkVal ? theme.colors.accent : "transparent",
                       display: "flex", alignItems: "center", justifyContent: "center",
-                      transition: "all 0.2s", fontSize: "0.7rem", color: "#fff", fontWeight: 700,
+                      transition: "all 0.2s", fontSize: "0.7rem", color: theme.colors.onAccent, fontWeight: 700,
                     }}>{checkVal ? "✓" : ""}</div>
                     <span style={{ fontSize: "0.85rem" }}>Enable alerts</span>
                   </div>
@@ -1013,13 +1173,27 @@ module.exports = {
               <div style={{ fontSize: "0.84rem", color: theme.colors.textMuted }}>
                 <strong style={{ color: theme.colors.text }}>{hasCustomizations ? `${baseTheme.name} Custom` : theme.name}</strong> · {button.name} buttons · {input.name} inputs · {card.name} cards
               </div>
-              <span {...pressable(() => setShowExport(!showExport))} aria-expanded={showExport}
-                onMouseEnter={() => setHoveredBtn("export")}
-                onMouseLeave={() => setHoveredBtn(null)}
-                style={getButtonCSS(button, theme, hoveredBtn === "export" ? "hover" : "default")}
-              >
-                {showExport ? "Hide Export ▲" : "Export Design Tokens ▼"}
-              </span>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <span {...pressable(handleCopyLink)}
+                  title="Copy a link to this exact configuration"
+                  style={{
+                    ...getButtonCSS(button, theme),
+                    background: "transparent",
+                    color: linkStatus === "failed" ? theme.colors.textMuted : theme.colors.accent,
+                    border: `1.5px solid ${theme.colors.border}`,
+                    boxShadow: "none",
+                  }}
+                >
+                  {linkStatus === "copied" ? "✓ Link copied" : linkStatus === "failed" ? "Copy failed" : "Copy Link"}
+                </span>
+                <span {...pressable(() => setShowExport(!showExport))} aria-expanded={showExport}
+                  onMouseEnter={() => setHoveredBtn("export")}
+                  onMouseLeave={() => setHoveredBtn(null)}
+                  style={getButtonCSS(button, theme, hoveredBtn === "export" ? "hover" : "default")}
+                >
+                  {showExport ? "Hide Export ▲" : "Export Design Tokens ▼"}
+                </span>
+              </div>
             </div>
 
             {/* Expandable export panel */}
