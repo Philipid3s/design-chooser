@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 const THEMES = [
   {
@@ -152,6 +152,45 @@ const COLOR_FIELDS = [
 const FONT_OPTIONS = [...new Set(THEMES.flatMap((theme) => [theme.fonts.heading, theme.fonts.body]))]
   .sort((a, b) => a.replace(/'/g, "").localeCompare(b.replace(/'/g, "")));
 
+// The UI uses weights 400–700. Most fonts cover that range; these don't.
+// Google Fonts rejects a request that asks for a weight a family lacks, so keep this in sync.
+const FONT_WEIGHT_EXCEPTIONS = {
+  "Archivo Black": [400],
+  "Gilda Display": [400],
+  "Libre Baskerville": [400, 700],
+  "Atkinson Hyperlegible": [400, 700],
+};
+const DEFAULT_FONT_WEIGHTS = [400, 500, 600, 700];
+
+function getFontStylesheetUrl(fontName) {
+  const weights = FONT_WEIGHT_EXCEPTIONS[fontName] ?? DEFAULT_FONT_WEIGHTS;
+  return `https://fonts.googleapis.com/css2?family=${fontName.replace(/ /g, "+")}:wght@${weights.join(";")}&display=swap`;
+}
+
+// Makes a non-button element focusable and operable with Enter/Space.
+function pressable(onPress, role = "button") {
+  return {
+    role,
+    tabIndex: 0,
+    onClick: onPress,
+    onKeyDown: (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        onPress();
+      }
+    },
+  };
+}
+
+function relativeLuminance(hex) {
+  const { r, g, b } = hexToRgb(hex);
+  const channel = (v) => {
+    const s = v / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+}
+
 function hexToRgb(hex) {
   const normalized = hex.replace("#", "");
   const expanded = normalized.length === 3
@@ -177,10 +216,16 @@ function getDerivedTheme(baseTheme, colorOverrides = {}, fontOverrides = {}) {
     ...colorOverrides,
   };
 
-  colors.accentSoft = withAlpha(colors.accent, baseTheme.cat === "Dark" ? 0.12 : 0.08);
+  // A customized background can flip a theme between light and dark.
+  const cat = colorOverrides.bg
+    ? (relativeLuminance(colors.bg) < 0.2 ? "Dark" : "Light")
+    : baseTheme.cat;
+
+  colors.accentSoft = withAlpha(colors.accent, cat === "Dark" ? 0.12 : 0.08);
 
   return {
     ...baseTheme,
+    cat,
     colors,
     fonts: {
       ...baseTheme.fonts,
@@ -251,7 +296,9 @@ export default function DesignChooser() {
   const [sliderVal, setSliderVal] = useState(65);
   const [checkVal, setCheckVal] = useState(true);
   const [radioVal, setRadioVal] = useState("a");
-  const [exported, setExported] = useState(false);
+  const [copyStatus, setCopyStatus] = useState(null); // null | "copied" | "failed"
+  const [previewText, setPreviewText] = useState("");
+  const exportTextareaRef = useRef(null);
 
   const baseTheme = THEMES.find(t => t.id === themeId);
   const theme = getDerivedTheme(baseTheme, colorOverrides, fontOverrides);
@@ -272,17 +319,22 @@ export default function DesignChooser() {
   const [showExport, setShowExport] = useState(false);
 
   useEffect(() => {
-    const fontNames = FONT_OPTIONS.map((font) => font.replace(/'/g, ""));
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = `https://fonts.googleapis.com/css2?family=${fontNames.map(f => f.replace(/ /g, "+") + ":wght@300;400;500;600;700").join("&family=")}&display=swap`;
-    document.head.appendChild(link);
+    // One stylesheet per family, so a single bad family can't block the rest.
+    const links = FONT_OPTIONS.map((font) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = getFontStylesheetUrl(font.replace(/'/g, ""));
+      document.head.appendChild(link);
+      return link;
+    });
+    return () => links.forEach((link) => link.remove());
   }, []);
 
-  useEffect(() => {
+  const selectTheme = (id) => {
+    setThemeId(id);
     setColorOverrides({});
     setFontOverrides({});
-  }, [themeId]);
+  };
 
   const exportJSON = () => {
     const c = theme.colors;
@@ -324,6 +376,7 @@ export default function DesignChooser() {
           ...(input.id === "boxed" && { border: "full", background: "transparent", borderRadius: "8px" }),
           ...(input.id === "filled" && { border: "focus-only", background: "input", borderRadius: "10px" }),
           ...(input.id === "floating" && { border: "full", background: "transparent", borderRadius: "8px", label: "floating" }),
+          ...(input.id === "pill" && { border: "full", background: "input", borderRadius: "999px", focusRing: "accent.soft" }),
         },
         card: {
           style: card.name,
@@ -331,6 +384,7 @@ export default function DesignChooser() {
           ...(card.id === "elevated" && { border: false, shadow: true, borderRadius: "14px" }),
           ...(card.id === "glass" && { border: true, shadow: true, backdropBlur: "12px", borderRadius: "14px" }),
           ...(card.id === "bordered-accent" && { border: true, shadow: false, accentBorderTop: true, borderRadius: "12px" }),
+          ...(card.id === "inset" && { border: true, shadow: "inset", background: "base", borderRadius: "12px" }),
         },
         toggle: { activeColor: "accent.base", inactiveColor: "border" },
         checkbox: { activeColor: "accent.base", borderRadius: button.radius === "0px" ? "0" : "4px" },
@@ -396,11 +450,21 @@ module.exports = {
     return "";
   };
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(getExportContent()).then(() => {
-      setExported(true);
-      setTimeout(() => setExported(false), 2000);
-    });
+  const handleCopy = async () => {
+    const flash = (status) => {
+      setCopyStatus(status);
+      setTimeout(() => setCopyStatus(null), 2000);
+    };
+    try {
+      await navigator.clipboard.writeText(getExportContent());
+      flash("copied");
+    } catch {
+      // Clipboard API is unavailable on insecure origins or when permission is denied.
+      const textarea = exportTextareaRef.current;
+      textarea?.select();
+      const ok = textarea ? document.execCommand("copy") : false;
+      flash(ok ? "copied" : "failed");
+    }
   };
 
   const handleColorChange = (token, value) => {
@@ -434,7 +498,8 @@ module.exports = {
     setSliderVal(65);
     setCheckVal(true);
     setRadioVal("a");
-    setExported(false);
+    setCopyStatus(null);
+    setPreviewText("");
   };
 
   const resetCustomizations = () => {
@@ -450,6 +515,7 @@ module.exports = {
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: ${theme.colors.border}; border-radius: 3px; }
+        [role]:focus-visible, button:focus-visible, select:focus-visible { outline: 2px solid ${theme.colors.accent}; outline-offset: 2px; }
       `}</style>
 
       <div style={{
@@ -516,7 +582,7 @@ module.exports = {
             {tab === "theme" && (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 10 }}>
                 {THEMES.map(th => (
-                  <div key={th.id} onClick={() => setThemeId(th.id)}
+                  <div key={th.id} {...pressable(() => selectTheme(th.id))} aria-pressed={themeId === th.id}
                     style={{
                       ...getCardCSS(card, theme),
                       padding: 14,
@@ -548,7 +614,7 @@ module.exports = {
             {tab === "buttons" && (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 10 }}>
                 {BUTTON_STYLES.map(bs => (
-                  <div key={bs.id} onClick={() => setButtonId(bs.id)}
+                  <div key={bs.id} {...pressable(() => setButtonId(bs.id))} aria-pressed={buttonId === bs.id}
                     style={{
                       ...getCardCSS(card, theme),
                       padding: 18,
@@ -574,7 +640,7 @@ module.exports = {
             {tab === "inputs" && (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 10 }}>
                 {INPUT_STYLES.map(inp => (
-                  <div key={inp.id} onClick={() => setInputId(inp.id)}
+                  <div key={inp.id} {...pressable(() => setInputId(inp.id))} aria-pressed={inputId === inp.id}
                     style={{
                       ...getCardCSS(card, theme),
                       padding: 18,
@@ -610,7 +676,7 @@ module.exports = {
             {tab === "cards" && (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 10 }}>
                 {CARD_STYLES.map(cs => (
-                  <div key={cs.id} onClick={() => setCardId(cs.id)}
+                  <div key={cs.id} {...pressable(() => setCardId(cs.id))} aria-pressed={cardId === cs.id}
                     style={{
                       ...getCardCSS(cs, theme),
                       padding: 20,
@@ -806,6 +872,9 @@ module.exports = {
               <div style={{ fontSize: "0.75rem", color: theme.colors.textMuted, marginBottom: 8, fontWeight: 500 }}>Form Input</div>
               <div style={{ position: "relative", maxWidth: 340 }}>
                 <input
+                  aria-label="Search contracts"
+                  value={previewText}
+                  onChange={(event) => setPreviewText(event.target.value)}
                   placeholder={input.id === "floating" ? "" : "Search contracts..."}
                   onFocus={() => setFocusedInput("preview")}
                   onBlur={() => setFocusedInput(null)}
@@ -814,8 +883,9 @@ module.exports = {
                 {input.id === "floating" && (
                   <span style={{
                     position: "absolute", left: 14,
-                    top: focusedInput === "preview" ? 4 : 14,
-                    fontSize: focusedInput === "preview" ? "0.68rem" : "0.88rem",
+                    // Label stays raised while focused or when the field has content.
+                    top: focusedInput === "preview" || previewText ? 4 : 14,
+                    fontSize: focusedInput === "preview" || previewText ? "0.68rem" : "0.88rem",
                     color: focusedInput === "preview" ? theme.colors.accent : theme.colors.textMuted,
                     transition: "all 0.2s", pointerEvents: "none",
                   }}>Search contracts...</span>
@@ -829,7 +899,7 @@ module.exports = {
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                 {/* Toggle */}
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div onClick={() => setToggleOn(!toggleOn)} style={{
+                  <div {...pressable(() => setToggleOn(!toggleOn), "switch")} aria-checked={toggleOn} aria-label="Auto-refresh data" style={{
                     width: 44, height: 24, borderRadius: "999px", cursor: "pointer",
                     background: toggleOn ? theme.colors.accent : theme.colors.border,
                     transition: "background 0.2s", position: "relative",
@@ -854,7 +924,7 @@ module.exports = {
                   <div style={{ position: "relative", height: 20, display: "flex", alignItems: "center" }}>
                     <div style={{ position: "absolute", width: "100%", height: 4, background: theme.colors.border, borderRadius: 2 }} />
                     <div style={{ position: "absolute", width: `${sliderVal}%`, height: 4, background: theme.colors.accent, borderRadius: 2, transition: "width 0.1s" }} />
-                    <input type="range" min={0} max={100} value={sliderVal} onChange={e => setSliderVal(+e.target.value)}
+                    <input type="range" min={0} max={100} value={sliderVal} onChange={e => setSliderVal(+e.target.value)} aria-label="Confidence threshold"
                       style={{ position: "absolute", width: "100%", height: 20, opacity: 0, cursor: "pointer" }} />
                     <div style={{
                       position: "absolute", left: `calc(${sliderVal}% - 8px)`,
@@ -868,7 +938,7 @@ module.exports = {
 
                 {/* Checkbox + Radio */}
                 <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
-                  <div onClick={() => setCheckVal(!checkVal)} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                  <div {...pressable(() => setCheckVal(!checkVal), "checkbox")} aria-checked={checkVal} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
                     <div style={{
                       width: 18, height: 18, borderRadius: button.radius === "0px" ? 0 : 4,
                       border: checkVal ? "none" : `2px solid ${theme.colors.border}`,
@@ -879,7 +949,7 @@ module.exports = {
                     <span style={{ fontSize: "0.85rem" }}>Enable alerts</span>
                   </div>
                   {["a", "b"].map(v => (
-                    <div key={v} onClick={() => setRadioVal(v)} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                    <div key={v} {...pressable(() => setRadioVal(v), "radio")} aria-checked={radioVal === v} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
                       <div style={{
                         width: 18, height: 18, borderRadius: "50%",
                         border: `2px solid ${radioVal === v ? theme.colors.accent : theme.colors.border}`,
@@ -911,7 +981,7 @@ module.exports = {
                 </div>
                 <div style={{ textAlign: "right" }}>
                   <div style={{ fontWeight: 700, fontSize: "1.1rem", color: theme.colors.accent }}>$108.25</div>
-                  <div style={{ fontSize: "0.72rem", color: "#4ade80" }}>+2.15%</div>
+                  <div style={{ fontSize: "0.72rem", color: theme.cat === "Dark" ? "#4ade80" : "#15803d" }}>+2.15%</div>
                 </div>
               </div>
             </div>
@@ -943,7 +1013,7 @@ module.exports = {
               <div style={{ fontSize: "0.84rem", color: theme.colors.textMuted }}>
                 <strong style={{ color: theme.colors.text }}>{hasCustomizations ? `${baseTheme.name} Custom` : theme.name}</strong> · {button.name} buttons · {input.name} inputs · {card.name} cards
               </div>
-              <span onClick={() => setShowExport(!showExport)}
+              <span {...pressable(() => setShowExport(!showExport))} aria-expanded={showExport}
                 onMouseEnter={() => setHoveredBtn("export")}
                 onMouseLeave={() => setHoveredBtn(null)}
                 style={getButtonCSS(button, theme, hoveredBtn === "export" ? "hover" : "default")}
@@ -987,6 +1057,8 @@ module.exports = {
                 {/* Code display */}
                 <div style={{ position: "relative" }}>
                   <textarea
+                    ref={exportTextareaRef}
+                    aria-label="Exported design tokens"
                     readOnly
                     value={getExportContent()}
                     style={{
@@ -1005,7 +1077,7 @@ module.exports = {
                       transition: "all 0.3s",
                     }}
                   />
-                  <span onClick={handleCopy}
+                  <span {...pressable(handleCopy)}
                     onMouseEnter={() => setHoveredBtn("copy")}
                     onMouseLeave={() => setHoveredBtn(null)}
                     style={{
@@ -1017,7 +1089,7 @@ module.exports = {
                       fontSize: "0.78rem",
                     }}
                   >
-                    {exported ? "✓ Copied!" : "Copy"}
+                    {copyStatus === "copied" ? "✓ Copied!" : copyStatus === "failed" ? "Copy failed" : "Copy"}
                   </span>
                 </div>
 

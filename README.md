@@ -18,7 +18,7 @@ npm run dev
 
 ## Deploy
 
-Pushes to `main` automatically deploy to GitHub Pages via the included Action.
+Pushes to `master` automatically deploy to GitHub Pages via the included Action.
 
 Before the first deploy:
 1. Go to your repo **Settings → Pages → Source** and select **GitHub Actions**
